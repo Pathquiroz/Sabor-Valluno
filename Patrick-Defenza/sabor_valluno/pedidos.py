@@ -1,7 +1,8 @@
 from abc import ABC, abstractmethod
-from modelo.clientes import Cliente
-from modelo.productos import Producto
-from modelo.pagos import Pago, Tarjeta
+from clientes import Cliente
+from productos import Producto
+from pagos import Pago, Tarjeta
+
 
 
 class PedidoProducto:
