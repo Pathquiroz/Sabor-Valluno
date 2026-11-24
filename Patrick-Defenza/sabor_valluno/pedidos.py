@@ -1,169 +1,215 @@
 from abc import ABC, abstractmethod
-from clientes import Cliente
-from productos import Producto
-from pagos import Pago
+from modelo.clientes import Cliente
+from modelo.productos import Producto
+from modelo.pagos import Pago, Tarjeta
 
 
-class ItemPedido:
-    def __init__(self, producto: Producto, cantidad: int = 1):
-        if cantidad <= 0:
-            raise ValueError("La cantidad debe ser mayor a cero")
-        if not producto.esta_disponible():
-            raise ValueError(f"El producto '{producto.nombre}' no está disponible")
+class PedidoProducto:
+    def __init__(self, pedido, producto, cantidad):
+        self._pedido = pedido
         self._producto = producto
-        self._cantidad = int(cantidad)
+        self.cantidad = cantidad
 
     @property
-    def producto(self) -> Producto:
+    def pedido(self):
+        return self._pedido
+
+    @property
+    def producto(self):
         return self._producto
 
     @property
-    def cantidad(self) -> int:
+    def cantidad(self):
         return self._cantidad
 
-    def subtotal(self) -> float:
+    @cantidad.setter
+    def cantidad(self, valor):
+        if not isinstance(valor, int) or not (1 <= valor <= 20):
+            raise ValueError("La cantidad de un producto en el pedido debe estar entre 1 y 20.")
+        self._cantidad = valor
+
+    def subtotal_item(self):
         return round(self._producto.calcular_precio() * self._cantidad, 2)
 
 
 class Pedido(ABC):
-    ESTADOS_VALIDOS = ("Pendiente", "En preparación", "Listo", "Entregado", "Cancelado")
-    COSTO_ENVASE = 2.0  # Bs 2 por envase
+    TRANSICIONES_VALIDAS = {
+        "REGISTRADO": ("EN_PREPARACION", "CANCELADO"),
+        "EN_PREPARACION": ("LISTO",),
+        "LISTO": ("ENTREGADO",),
+        "ENTREGADO": (),
+        "CANCELADO": (),
+    }
 
-    def __init__(self, numero_pedido: int, cliente: Cliente):
+    def __init__(self, numero_pedido, cliente, dia="lunes"):
         self._numero_pedido = numero_pedido
         self._cliente = cliente
-        self._estado = "Pendiente"
-        self._items: list[ItemPedido] = []
-        self._pago: Pago | None = None
+        self._dia = dia.strip().lower()
+        self._estado = "REGISTRADO"
+        self._pago = None
+        self._items = []
 
     @property
-    def numero_pedido(self) -> int:
+    def numero_pedido(self):
         return self._numero_pedido
 
     @property
-    def cliente(self) -> Cliente:
+    def cliente(self):
         return self._cliente
 
     @property
-    def estado(self) -> str:
+    def dia(self):
+        return self._dia
+
+    @property
+    def estado(self):
         return self._estado
 
     @property
-    def items(self) -> tuple[ItemPedido, ...]:
-        return tuple(self._items)
-
-    @property
-    def pago(self) -> Pago | None:
+    def pago(self):
         return self._pago
 
-    def _validar_modificable(self):
-        if self._estado != "Pendiente" or self._pago is not None:
-            raise ValueError("No se pueden modificar ítems de un pedido ya pagado o en curso")
+    @property
+    def items(self):
+        return list(self._items)
 
-    def agregar_item(self, producto: Producto, cantidad: int = 1):
-        self._validar_modificable()
+    def _verificar_editable(self):
+        if self._estado != "REGISTRADO":
+            raise ValueError(
+                f"No se pueden modificar productos cuando el pedido está en estado '{self._estado}'."
+            )
+
+    def agregar_producto(self, producto, cantidad=1):
+        self._verificar_editable()
+        if not producto.esta_disponible(self._dia):
+            raise ValueError(f"El producto '{producto.nombre}' no está disponible el día {self._dia}.")
         for item in self._items:
-            if item.producto.codigo == producto.codigo:
-                item._cantidad += cantidad
+            if item.producto is producto:
+                item.cantidad = item.cantidad + cantidad
                 return
-        self._items.append(ItemPedido(producto, cantidad))
+        self._items.append(PedidoProducto(self, producto, cantidad))
 
-    def quitar_item(self, codigo_producto: str):
-        self._validar_modificable()
+    def quitar_producto(self, nombre_producto):
+        self._verificar_editable()
         for i, item in enumerate(self._items):
-            if item.producto.codigo == codigo_producto:
+            if item.producto.nombre.lower() == nombre_producto.strip().lower():
                 self._items.pop(i)
                 return
-        raise ValueError("El producto no se encuentra en el pedido")
+        raise ValueError(f"El producto '{nombre_producto}' no está en el pedido.")
 
-    def cambiar_estado(self, nuevo_estado: str):
-        if nuevo_estado not in self.ESTADOS_VALIDOS:
-            raise ValueError(f"Estado inválido: {nuevo_estado}")
-        if self._estado == "Cancelado":
-            raise ValueError("No se puede cambiar el estado de un pedido cancelado")
-        if nuevo_estado == "Entregado" and self._pago is None:
-            raise ValueError("No se puede entregar un pedido sin pago registrado")
-        self._estado = nuevo_estado
+    def cambiar_estado(self, nuevo_estado):
+        destino = nuevo_estado.strip().upper()
+        permitidos = self.TRANSICIONES_VALIDAS.get(self._estado, ())
+        if destino not in permitidos:
+            raise ValueError(f"Transición de estado inválida: {self._estado} -> {destino}.")
+        self._estado = destino
 
-    def calcular_subtotal(self) -> float:
-        return round(sum(item.subtotal() for item in self._items), 2)
+    def cancelar_pedido(self):
+        self.cambiar_estado("CANCELADO")
 
-    def total_unidades(self) -> int:
-        return sum(item.cantidad for item in self._items)
+    def calcular_subtotal(self):
+        return round(sum(item.subtotal_item() for item in self._items), 2)
+
+    def contar_platos(self):
+        return sum(item.producto.contar_platos() * item.cantidad for item in self._items)
 
     @abstractmethod
-    def calcular_cargo_extra(self) -> float:
+    def calcular_cargo(self):
         pass
 
-    def calcular_total(self) -> float:
-        if not self._items:
-            raise ValueError("El pedido no tiene productos")
-        return round(self.calcular_subtotal() + self.calcular_cargo_extra(), 2)
+    def calcular_total(self):
+        return round(self.calcular_subtotal() + self.calcular_cargo(), 2)
 
-    def registrar_pago(self, pago: Pago):
-        if self._pago is not None:
-            raise ValueError("Este pedido ya tiene un pago registrado")
-        if self._estado == "Cancelado":
-            raise ValueError("No se puede pagar un pedido cancelado")
-        total = self.calcular_total()
-        if round(pago.monto, 2) != total:
-            raise ValueError(f"El monto del pago (Bs {pago.monto:.2f}) debe ser igual al total (Bs {total:.2f})")
-        pago.confirmar()
+    def registrar_pago(self, pago):
+        if not self._items:
+            raise ValueError("No se puede cobrar un pedido sin productos.")
+        if self._estado == "CANCELADO":
+            raise ValueError("No se puede cobrar un pedido cancelado.")
+        total_cobrado = pago.validar_pago(self.calcular_total())
         self._pago = pago
+        return total_cobrado
 
 
 class Local(Pedido):
-    def __init__(self, numero_pedido: int, cliente: Cliente, nro_mesa: int):
-        super().__init__(numero_pedido, cliente)
-        if nro_mesa <= 0:
-            raise ValueError("El número de mesa debe ser positivo")
-        self._nro_mesa = nro_mesa
+    def __init__(self, numero_pedido, cliente, n_mesa, dia="lunes"):
+        super().__init__(numero_pedido, cliente, dia)
+        self.n_mesa = n_mesa
 
     @property
-    def nro_mesa(self) -> int:
-        return self._nro_mesa
+    def n_mesa(self):
+        return self._n_mesa
 
-    def calcular_cargo_extra(self) -> float:
+    @n_mesa.setter
+    def n_mesa(self, valor):
+        if not isinstance(valor, int) or not (1 <= valor <= 15):
+            raise ValueError("El número de mesa debe estar entre 1 y 15.")
+        self._n_mesa = valor
+
+    def calcular_cargo(self):
         return 0.0
 
 
 class Llevar(Pedido):
-    def calcular_cargo_extra(self) -> float:
-        # Bs 2 por cada envase
-        return round(self.total_unidades() * self.COSTO_ENVASE, 2)
+    COSTO_ENVASE_PLATO = 2.0
+
+    def __init__(self, numero_pedido, cliente, dia="lunes"):
+        super().__init__(numero_pedido, cliente, dia)
+
+    def calcular_cargo(self):
+        return round(self.contar_platos() * self.COSTO_ENVASE_PLATO, 2)
 
 
 class Delivery(Pedido):
-    MONTO_MINIMO = 40.0
-    ENVIO_GRATIS_DESDE = 150.0
-    COSTO_ENVIO_BASE = 15.0
+    TARIFAS_ZONA = {
+        "cercado": 8.0,
+        "quillacollo": 15.0,
+        "sacaba": 15.0,
+        "vinto": 20.0,
+    }
+    PEDIDO_MINIMO = 40.0
+    ENVIO_GRATIS_CERCADO_DESDE = 150.0
 
-    def __init__(self, numero_pedido: int, cliente: Cliente, direccion: str, zona: str = "Cercado"):
-        super().__init__(numero_pedido, cliente)
-        if not direccion or not direccion.strip():
-            raise ValueError("La dirección es obligatoria para Delivery")
-        self._direccion = direccion.strip()
-        self._zona = zona.strip()
+    def __init__(self, numero_pedido, cliente, zona, direccion, dia="lunes"):
+        super().__init__(numero_pedido, cliente, dia)
+        self.zona = zona
+        self.direccion = direccion
 
     @property
-    def direccion(self) -> str:
-        return self._direccion
-
-    @property
-    def zona(self) -> str:
+    def zona(self):
         return self._zona
 
-    def costo_envio(self) -> float:
-        return 0.0 if self.calcular_subtotal() >= self.ENVIO_GRATIS_DESDE else self.COSTO_ENVIO_BASE
+    @zona.setter
+    def zona(self, valor):
+        z = valor.strip().lower()
+        if z not in self.TARIFAS_ZONA:
+            raise ValueError(f"Zona no válida. Opciones: {', '.join(self.TARIFAS_ZONA.keys())}.")
+        self._zona = z
 
-    def calcular_cargo_extra(self) -> float:
+    @property
+    def direccion(self):
+        return self._direccion
+
+    @direccion.setter
+    def direccion(self, valor):
+        if not valor or not valor.strip():
+            raise ValueError("La dirección de entrega es obligatoria para delivery.")
+        self._direccion = valor.strip()
+
+    def calcular_cargo(self):
         subtotal = self.calcular_subtotal()
-        if subtotal < self.MONTO_MINIMO:
-            raise ValueError(f"El monto mínimo para Delivery es Bs {self.MONTO_MINIMO:.2f}")
-        envases = self.total_unidades() * self.COSTO_ENVASE
-        return round(envases + self.costo_envio(), 2)
+        if self._zona == "cercado" and subtotal >= self.ENVIO_GRATIS_CERCADO_DESDE:
+            return 0.0
+        return self.TARIFAS_ZONA[self._zona]
 
-    def registrar_pago(self, pago: Pago):
-        if not pago.permite_delivery():
-            raise ValueError("Delivery solo acepta pagos en Efectivo o QR")
-        super().registrar_pago(pago)
+    def calcular_total(self):
+        subtotal = self.calcular_subtotal()
+        if subtotal < self.PEDIDO_MINIMO:
+            raise ValueError(
+                f"El pedido mínimo para delivery es Bs {self.PEDIDO_MINIMO:.2f} (subtotal actual: Bs {subtotal:.2f})."
+            )
+        return round(subtotal + self.calcular_cargo(), 2)
+
+    def registrar_pago(self, pago):
+        if isinstance(pago, Tarjeta):
+            raise ValueError("Los pedidos por delivery solo aceptan pago en Efectivo o QR.")
+        return super().registrar_pago(pago)
